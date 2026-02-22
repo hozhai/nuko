@@ -48,6 +48,7 @@ pub struct Instance {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct InstanceConfig {
+    pub id: String,
     pub name: String,
     pub software: String,
     pub version: String,
@@ -59,10 +60,18 @@ pub struct InstanceConfig {
 
 #[derive(Debug, Serialize)]
 pub struct InstanceInfo {
+    pub id: String,
     pub name: String,
     pub software: String,
     pub version: String,
     pub running: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct InstanceMetrics {
+    pub time: String,
+    pub cpu_usage: f32,
+    pub memory_usage: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

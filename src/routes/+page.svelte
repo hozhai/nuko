@@ -5,6 +5,7 @@
     import { listen } from "@tauri-apps/api/event";
 
     let instances: Array<{
+        id: string;
         name: string;
         software: string;
         version: string;
@@ -15,9 +16,14 @@
         invoke("open_new_instance_window");
     }
 
+    function handleView(id: string, name: string) {
+        invoke("open_instance_view", { id: id, name: name });
+    }
+
     function fetchInstances() {
         invoke<
             Array<{
+                id: string;
                 name: string;
                 software: string;
                 version: string;
@@ -40,7 +46,7 @@
 </script>
 
 <main class="min-h-screen bg-background text-foreground m-0 p-0">
-    <nav
+    <aside
         class="font-sans h-10 bg-sidebar flex border-b border-border items-center"
     >
         <Button
@@ -64,14 +70,14 @@
             >
             New Instance
         </Button>
-    </nav>
+    </aside>
     <div
         class="m-10 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4"
     >
         {#each instances as i}
             <Card.Root>
                 <Card.Header>
-                    <Card.Title>{i.name}</Card.Title>
+                    <Card.Title class="font-mono">{i.name}</Card.Title>
                     <Card.Description>
                         {i.software} v{i.version} - {i.running
                             ? "Running"
@@ -79,7 +85,10 @@
                     </Card.Description>
                 </Card.Header>
                 <Card.Footer>
-                    <Button>View</Button>
+                    <Button
+                        class="cursor-pointer"
+                        onclick={() => handleView(i.id, i.name)}>View</Button
+                    >
                 </Card.Footer>
             </Card.Root>
         {/each}

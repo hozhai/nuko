@@ -342,7 +342,7 @@
             </div>
         {:else}
             <div>
-                <Label class="mb-2 block">Custom Server JAR</Label>
+                <Label class="mb-2 block">Bring your own Server JAR</Label>
                 <div class="flex gap-2">
                     <Input
                         type="text"

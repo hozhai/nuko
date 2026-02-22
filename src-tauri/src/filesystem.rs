@@ -42,6 +42,7 @@ pub async fn create_nuko_properties(
     let properties_path = instance_dir.join("nuko.toml");
 
     let config = InstanceConfig {
+        id: uuid::Uuid::new_v4().to_string(),
         custom_jar_path: instance.custom_jar_path.clone(),
         name: instance.name.clone(),
         software: instance.software.clone(),

@@ -184,7 +184,17 @@ pub async fn get_instance_metrics(
     let instance_dir = data_dir.join("instances").join(&config.name);
 
     let mut sys = get_system().lock().unwrap();
-    sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
+    sys.refresh_processes_specifics(
+        sysinfo::ProcessesToUpdate::All,
+        true,
+        sysinfo::ProcessRefreshKind::everything(),
+    );
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    sys.refresh_processes_specifics(
+        sysinfo::ProcessesToUpdate::All,
+        true,
+        sysinfo::ProcessRefreshKind::everything(),
+    );
 
     let mut cpu_usage = 0.0;
     let mut memory_usage = 0;
@@ -205,6 +215,18 @@ pub async fn get_instance_metrics(
         cpu_usage,
         memory_usage,
     })
+}
+
+#[tauri::command]
+pub async fn send_instance_command(id: String, command: String) -> Result<(), String> {
+    let mut stdin_map = get_stdin_map().lock().unwrap();
+    if let Some(stdin) = stdin_map.get_mut(&id) {
+        writeln!(stdin, "{}", command).map_err(|e| e.to_string())?;
+        stdin.flush().map_err(|e| e.to_string())?;
+        Ok(())
+    } else {
+        Err("Instance is not running".to_string())
+    }
 }
 
 #[tauri::command]

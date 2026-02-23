@@ -163,3 +163,10 @@ pub struct FabricLauncherMeta {
 pub struct FabricServer {
     pub url: String,
 }
+
+// ============ Config ============
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct GlobalConfig {
+    pub theme: String,
+}

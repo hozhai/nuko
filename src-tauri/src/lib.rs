@@ -1,18 +1,18 @@
-use reqwest::Client;
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 
+mod config;
 mod download;
 mod filesystem;
 mod instance;
 mod models;
 
 #[tauri::command]
-async fn close_current_window(window: tauri::Window) -> Result<(), String> {
+fn close_current_window(window: tauri::Window) -> Result<(), String> {
     window.close().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-async fn open_new_instance_window(app_handle: AppHandle) -> Result<(), String> {
+fn open_new_instance_window(app_handle: AppHandle) -> Result<(), String> {
     if let Some(existing) = app_handle.get_webview_window("new-instance") {
         existing.set_focus().map_err(|e| e.to_string())?;
         return Ok(());
@@ -43,7 +43,27 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_opener::init())
+        .setup(|app| {
+            let data_dir = filesystem::get_data_dir(&app.app_handle())?;
+            if !data_dir.join("instances").exists() {
+                let main_window = app
+                    .app_handle()
+                    .get_webview_window("main")
+                    .ok_or("main window not found")?;
+                WebviewWindowBuilder::new(app, "onboarding", WebviewUrl::App("/onboarding".into()))
+                    .title("Welcome to Nuko!")
+                    .inner_size(600., 400.)
+                    .parent(&main_window)
+                    .map_err(|e| e.to_string())?
+                    .build()
+                    .map_err(|e| e.to_string())?;
+            }
+
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
+            config::get_config,
+            config::set_theme,
             open_new_instance_window,
             close_current_window,
             download::get_vanilla_versions,
@@ -65,6 +85,7 @@ pub fn run() {
             instance::get_instance_logs,
             instance::get_instance_info,
             instance::get_instance_metrics,
+            instance::send_instance_command,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

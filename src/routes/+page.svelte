@@ -4,32 +4,42 @@
     import { invoke } from "@tauri-apps/api/core";
     import { listen } from "@tauri-apps/api/event";
 
-    let instances: Array<{
+    type InstanceCard = {
         id: string;
         name: string;
         software: string;
         version: string;
         running: boolean;
-    }> = $state([]);
+        playit: boolean;
+    };
+
+    let instances: InstanceCard[] = $state([]);
 
     function openNewInstanceWindow() {
         invoke("open_new_instance_window");
     }
 
     function handleView(id: string, name: string) {
-        invoke("open_instance_view", { id: id, name: name });
+        invoke("open_instance_view", { id, name });
     }
 
     function fetchInstances() {
-        invoke<
-            Array<{
-                id: string;
-                name: string;
-                software: string;
-                version: string;
-                running: boolean;
-            }>
-        >("list_instances").then((list) => (instances = list));
+        invoke<InstanceCard[]>("list_instances").then(
+            (list) => (instances = list),
+        );
+    }
+
+    function statusLabel(instance: InstanceCard) {
+        if (instance.running && instance.playit) {
+            return "Running • Playit";
+        }
+        if (instance.running) {
+            return "Running";
+        }
+        if (instance.playit) {
+            return "Stopped • Playit";
+        }
+        return "Stopped";
     }
 
     $effect(() => {
@@ -75,20 +85,50 @@
         class="m-10 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4"
     >
         {#each instances as i}
-            <Card.Root>
-                <Card.Header>
-                    <Card.Title class="font-mono">{i.name}</Card.Title>
-                    <Card.Description>
-                        {i.software} v{i.version} - {i.running
-                            ? "Running"
-                            : "Stopped"}
+            <Card.Root class="relative">
+                <Card.Header class="space-y-2">
+                    <div class="flex items-center justify-between gap-2">
+                        <Card.Title class="font-mono truncate"
+                            >{i.name}</Card.Title
+                        >
+                        {#if i.playit}
+                            <span
+                                class="text-xs uppercase tracking-wide px-2 py-0.5 rounded-md bg-emerald-600/15 text-emerald-400 border border-emerald-600/40"
+                            >
+                                Playit
+                            </span>
+                        {/if}
+                    </div>
+                    <Card.Description class="flex flex-col gap-1 text-sm">
+                        <span>{i.software} v{i.version}</span>
+                        <span
+                            class={`font-semibold ${
+                                i.running
+                                    ? "text-emerald-400"
+                                    : "text-muted-foreground"
+                            }`}>{statusLabel(i)}</span
+                        >
                     </Card.Description>
                 </Card.Header>
-                <Card.Footer>
+                <Card.Footer class="flex justify-between items-center">
+                    <div
+                        class="text-xs text-muted-foreground flex items-center gap-1"
+                    >
+                        <span
+                            class={`inline-block h-2 w-2 rounded-full ${
+                                i.running
+                                    ? "bg-emerald-400"
+                                    : "bg-muted-foreground"
+                            }`}
+                        ></span>
+                        {i.running ? "Online" : "Offline"}
+                    </div>
                     <Button
                         class="cursor-pointer"
-                        onclick={() => handleView(i.id, i.name)}>View</Button
+                        onclick={() => handleView(i.id, i.name)}
                     >
+                        View
+                    </Button>
                 </Card.Footer>
             </Card.Root>
         {/each}

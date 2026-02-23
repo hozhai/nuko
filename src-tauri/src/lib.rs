@@ -5,6 +5,7 @@ mod download;
 mod filesystem;
 mod instance;
 mod models;
+mod playit;
 
 #[tauri::command]
 fn close_current_window(window: tauri::Window) -> Result<(), String> {
@@ -85,6 +86,7 @@ pub fn run() {
             instance::get_instance_logs,
             instance::get_instance_info,
             instance::get_instance_metrics,
+            instance::get_playit_tunnels,
             instance::send_instance_command,
         ])
         .run(tauri::generate_context!())

@@ -2,13 +2,10 @@ use std::{fs, path::Path};
 
 use reqwest::Client;
 
-use crate::models::{
-    self, FabricLoaderResponse, Instance, PaperBuilds, PaperDownload, VersionDetails,
-    VersionManifest,
-};
+use crate::models::{self, Instance, PaperBuilds, PaperDownload, VersionDetails, VersionManifest};
 
 /// Download the appropriate server JAR for the given instance
-pub async fn download_server_jar(instance_dir: &Path, instance: Instance) -> Result<(), String> {
+pub async fn download_server_jar(instance_dir: &Path, instance: &Instance) -> Result<(), String> {
     println!(
         "Resolving download URL for {} {}...",
         instance.software, instance.version
@@ -599,4 +596,53 @@ pub async fn get_neoforge_versions(mc_version: String) -> Result<Vec<String>, St
     });
 
     Ok(versions)
+}
+
+pub async fn download_playit(instance_dir: &Path) -> Result<(), String> {
+    let os = std::env::consts::OS;
+    let arch = std::env::consts::ARCH;
+
+    let binary_name = match (os, arch) {
+        ("macos", "aarch64") => "playit-darwin-arm",
+        ("macos", "x86_64") => "playit-darwin-intel",
+        ("linux", "x86_64") => "playit-linux-amd64",
+        ("linux", "aarch64") => "playit-linux-aarch64",
+        ("windows", "x86_64") => "playit-windows-x86_64.exe",
+        _ => return Err(format!("Unsupported OS/Arch for playit: {}/{}", os, arch)),
+    };
+
+    let url = format!(
+        "https://github.com/playit-cloud/playit-agent/releases/download/v0.15.13/{}",
+        binary_name
+    );
+    let dest_name = if os == "windows" {
+        "playit.exe"
+    } else {
+        "playit"
+    };
+    let dest_path = instance_dir.join(dest_name);
+
+    if dest_path.exists() {
+        return Ok(());
+    }
+
+    println!(
+        "Downloading playit agent from {} to {}...",
+        url,
+        dest_path.display()
+    );
+    download_to_path(&url, &dest_path).await?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&dest_path)
+            .map_err(|e| e.to_string())?
+            .permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&dest_path, perms).map_err(|e| e.to_string())?;
+    }
+
+    println!("Playit agent downloaded successfully!");
+    Ok(())
 }

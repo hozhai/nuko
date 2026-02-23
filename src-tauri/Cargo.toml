@@ -30,3 +30,4 @@ toml = "1.0.3"
 chrono = { version = "0.4.43", features = ["serde"] }
 tauri-plugin-dialog = "2.6.0"
 sysinfo = "0.38.2"
+tokio = { version = "1", features = ["time"] }

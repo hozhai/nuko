@@ -3,6 +3,7 @@
     import { open } from "@tauri-apps/plugin-dialog";
     import { Button } from "$lib/components/ui/button";
     import { Input } from "$lib/components/ui/input";
+    import { Switch } from "$lib/components/ui/switch/";
     import { Label } from "$lib/components/ui/label";
     import * as Select from "$lib/components/ui/select";
     import { Spinner } from "$lib/components/ui/spinner";
@@ -26,6 +27,7 @@
     let customJarPath = $state<string | null>(null);
     let iconPath = $state<string | null>(null);
     let iconUrl = $state<string | null>(null);
+    let playit = $state(false);
 
     // Loading states
     let mcVersions = $state<string[]>([]);
@@ -134,7 +136,7 @@
         loaderLoading = true;
 
         try {
-            const versions = await invoke<string[]>(cmd, { mcVersion: mcv });
+            const versions = await invoke<string[]>(cmd, { mc_version: mcv });
             loaderVersions = versions;
         } catch (e) {
             loaderError = `Failed to fetch loader versions: ${e}`;
@@ -217,6 +219,7 @@
 
     async function handleCreate() {
         if (!isFormValid) return;
+
         try {
             creationLoading = true;
             await invoke("create_instance", {
@@ -224,8 +227,9 @@
                 software: software,
                 version: software === "custom" ? "custom" : mcVersion,
                 loader: loaderVersion !== "" ? loaderVersion : null,
-                iconPath: iconPath,
-                customJarPath: customJarPath,
+                playit: playit,
+                icon_path: iconPath,
+                custom_jar_path: customJarPath,
             });
 
             creationLoading = false;
@@ -290,22 +294,40 @@
 
     <div class="m-4 space-y-4">
         <!-- Server Software Selector -->
-        <div>
-            <Label for="software" class="mb-2 block">Server Software</Label>
-            <Select.Root type="single" bind:value={software}>
-                <Select.Trigger id="software" class="w-full">
-                    {SERVER_SOFTWARE.find((s) => s.value === software)?.label ??
-                        "Select software..."}
-                </Select.Trigger>
-                <Select.Content>
-                    {#each SERVER_SOFTWARE as sw}
-                        <Select.Item value={sw.value} label={sw.label}
-                            >{sw.label}</Select.Item
-                        >
-                    {/each}
-                </Select.Content>
-            </Select.Root>
+        <div class="flex items-center space-x-4">
+            <div class="w-full">
+                <Label for="software" class="mb-2 block">Server Software</Label>
+                <Select.Root type="single" bind:value={software}>
+                    <Select.Trigger id="software" class="w-full">
+                        {SERVER_SOFTWARE.find((s) => s.value === software)
+                            ?.label ?? "Select software..."}
+                    </Select.Trigger>
+                    <Select.Content>
+                        {#each SERVER_SOFTWARE as sw}
+                            <Select.Item value={sw.value} label={sw.label}
+                                >{sw.label}</Select.Item
+                            >
+                        {/each}
+                    </Select.Content>
+                </Select.Root>
+            </div>
+            <div class="flex items-center">
+                <Switch class="mt-4" id="playit-switch" bind:checked={playit} />
+                <Label for="playit-switch" class="ml-2 text-xs"
+                    >Enable Playit.gg</Label
+                >
+            </div>
         </div>
+
+        {#if playit}
+            <div class="space-y-2">
+                <Label class="text-xs uppercase tracking-wide">Playit</Label>
+                <p class="text-muted-foreground text-xs">
+                    Nuko will automatically claim a Playit agent secret for this
+                    instance the first time you start it.
+                </p>
+            </div>
+        {/if}
 
         <!-- Minecraft Version Selector -->
         {#if software !== "custom"}

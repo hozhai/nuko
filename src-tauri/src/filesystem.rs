@@ -1,10 +1,12 @@
-use std::fs;
-use std::path::PathBuf;
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 use tauri::Manager;
 
 use chrono::Utc;
 
-use crate::models::{Instance, InstanceConfig, JavaConfig, MetadataConfig};
+use crate::models::{Instance, InstanceConfig, JavaConfig, MetadataConfig, PlayitMetadata};
 
 /// Get the application's data directory, creating it if it doesn't exist
 pub fn get_data_dir(app_handle: &tauri::AppHandle) -> Result<PathBuf, String> {
@@ -48,6 +50,8 @@ pub async fn create_nuko_properties(
         software: instance.software.clone(),
         version: instance.version.clone(),
         loader: instance.loader.clone(),
+        playit: instance.playit,
+        playit_secret: None,
         java: JavaConfig {
             min_memory: "2G".to_string(),
             max_memory: "4G".to_string(),
@@ -58,6 +62,7 @@ pub async fn create_nuko_properties(
             created_at: Utc::now().to_rfc3339(),
             last_played: None,
             play_time_minutes: 0,
+            playit: PlayitMetadata::default(),
         },
     };
 
@@ -68,4 +73,13 @@ pub async fn create_nuko_properties(
         .map_err(|e| format!("Failed to write nuko.toml: {}", e))?;
 
     Ok(())
+}
+
+pub fn save_instance_config(instance_dir: &Path, config: &InstanceConfig) -> Result<(), String> {
+    let properties_path = instance_dir.join("nuko.toml");
+    let toml_string = toml::to_string_pretty(config)
+        .map_err(|e| format!("Failed to serialize nuko.toml: {}", e))?;
+
+    fs::write(&properties_path, toml_string)
+        .map_err(|e| format!("Failed to write nuko.toml: {}", e))
 }

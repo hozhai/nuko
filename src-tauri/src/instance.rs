@@ -1,17 +1,52 @@
 use std::{
     collections::HashMap,
+    fs,
     io::{BufRead, BufReader, Write},
-    process::{ChildStdin, Command, Stdio},
+    path::{Path, PathBuf},
+    process::{Child, ChildStdin, Command, Stdio},
     sync::{Mutex, OnceLock},
     thread,
 };
 
 use crate::{
-    download::download_server_jar,
-    filesystem::{self, create_eula_txt, create_nuko_properties},
-    models::{Instance, InstanceConfig, InstanceInfo, InstanceMetrics},
+    download::{download_playit, download_server_jar},
+    filesystem::{self, create_eula_txt, create_nuko_properties, save_instance_config},
+    models::{Instance, InstanceConfig, InstanceInfo, InstanceMetrics, PlayitTunnelMetadata},
+    playit::{claim_playit_secret, fetch_playit_tunnels},
 };
 use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
+
+const PLAYIT_SECRET_FILE: &str = "playit-secret.txt";
+
+fn is_instance_server_process(process: &sysinfo::Process, instance_dir: &Path) -> bool {
+    let Some(cwd) = process.cwd() else {
+        return false;
+    };
+    if cwd != instance_dir {
+        return false;
+    }
+
+    if process
+        .cmd()
+        .iter()
+        .any(|arg| arg.to_string_lossy().contains("server.jar"))
+    {
+        return true;
+    }
+
+    process
+        .exe()
+        .and_then(|path| path.file_name())
+        .and_then(|name| name.to_str())
+        .map(|name| {
+            let lower = name.to_ascii_lowercase();
+            if lower.contains("playit") {
+                return false;
+            }
+            lower == "java" || lower == "java.exe" || lower == "javaw.exe"
+        })
+        .unwrap_or(false)
+}
 
 fn get_logs_map() -> &'static Mutex<HashMap<String, Vec<String>>> {
     static LOGS: OnceLock<Mutex<HashMap<String, Vec<String>>>> = OnceLock::new();
@@ -28,6 +63,85 @@ fn get_system() -> &'static Mutex<sysinfo::System> {
     SYS.get_or_init(|| Mutex::new(sysinfo::System::new()))
 }
 
+fn get_playit_processes() -> &'static Mutex<HashMap<String, Child>> {
+    static PLAYIT: OnceLock<Mutex<HashMap<String, Child>>> = OnceLock::new();
+    PLAYIT.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn persist_playit_secret(instance_dir: &Path, secret: &str) -> Result<PathBuf, String> {
+    let trimmed = secret.trim();
+    if trimmed.is_empty() {
+        return Err("Playit secret cannot be empty".into());
+    }
+
+    let secret_path = instance_dir.join(PLAYIT_SECRET_FILE);
+    fs::write(&secret_path, trimmed)
+        .map_err(|e| format!("Failed writing Playit secret file: {}", e))?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(metadata) = fs::metadata(&secret_path) {
+            let mut perms = metadata.permissions();
+            perms.set_mode(0o600);
+            let _ = fs::set_permissions(&secret_path, perms);
+        }
+    }
+
+    Ok(secret_path)
+}
+
+fn playit_binary_name() -> &'static str {
+    if std::env::consts::OS == "windows" {
+        "playit.exe"
+    } else {
+        "playit"
+    }
+}
+
+async fn ensure_playit_secret(
+    instance: &mut InstanceConfig,
+    instance_dir: &Path,
+) -> Result<String, String> {
+    if let Some(secret) = instance
+        .playit_secret
+        .as_ref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+    {
+        return Ok(secret.to_string());
+    }
+
+    download_playit(instance_dir)
+        .await
+        .map_err(|e| format!("Error calling download_playit: {}", e))?;
+
+    let playit_path = instance_dir.join(playit_binary_name());
+    if !playit_path.exists() {
+        return Err("Playit agent binary is missing after download".to_string());
+    }
+
+    let secret_path = instance_dir.join(PLAYIT_SECRET_FILE);
+
+    let secret = claim_playit_secret(&playit_path, instance_dir, &secret_path).await?;
+    let normalized = secret.trim().to_string();
+    instance.playit_secret = Some(normalized.clone());
+    save_instance_config(instance_dir, instance)?;
+    Ok(normalized)
+}
+
+fn kill_playit_agent(id: &str) {
+    let child = {
+        let mut processes = get_playit_processes().lock().unwrap();
+        processes.remove(id)
+    };
+
+    if let Some(mut child) = child {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+}
+
 #[tauri::command]
 pub async fn get_instance_logs(id: String) -> Result<Vec<String>, String> {
     let logs_map = get_logs_map().lock().unwrap();
@@ -41,6 +155,7 @@ pub async fn create_instance(
     name: String,
     software: String,
     version: String,
+    playit: bool,
     loader: Option<String>,
     icon_path: Option<String>,
     custom_jar_path: Option<String>,
@@ -49,6 +164,7 @@ pub async fn create_instance(
         name,
         software,
         version,
+        playit,
         loader,
         custom_jar_path,
     };
@@ -64,7 +180,7 @@ pub async fn create_instance(
         .map_err(|e| format!("Error calling create_directory: {}", e))?;
 
     if let Some(icon) = icon_path {
-        std::fs::copy(&icon, instance_dir.join("server-icon.png"))
+        fs::copy(&icon, instance_dir.join("server-icon.png"))
             .map_err(|e| format!("Failed to copy server icon: {}", e))?;
     }
 
@@ -72,13 +188,19 @@ pub async fn create_instance(
         .await
         .map_err(|e| format!("Error calling create_nuko_manifest: {}", e))?;
 
-    download_server_jar(&instance_dir, server)
+    download_server_jar(&instance_dir, &server)
         .await
         .map_err(|e| format!("Error calling download_server_jar: {}", e))?;
 
     create_eula_txt(&instance_dir)
         .await
         .map_err(|e| format!("Error calling create_eula_txt: {}", e))?;
+
+    if server.playit {
+        download_playit(&instance_dir)
+            .await
+            .map_err(|e| format!("Error calling download_playit: {}", e))?;
+    }
 
     let _ = app_handle.emit("instances-updated", ());
 
@@ -102,7 +224,7 @@ pub async fn list_instances(app_handle: tauri::AppHandle) -> Result<Vec<Instance
 
     let mut instances = Vec::new();
 
-    for item in std::fs::read_dir(instances_dir)
+    for item in fs::read_dir(instances_dir)
         .map_err(|e| format!("Failed to read instances directory: {}", e))?
     {
         let entry = item.map_err(|e| format!("Failed to read instance entry: {}", e))?;
@@ -113,19 +235,17 @@ pub async fn list_instances(app_handle: tauri::AppHandle) -> Result<Vec<Instance
         {
             let config_path = entry.path().join("nuko.toml");
             if config_path.exists() {
-                let config_content = std::fs::read_to_string(&config_path)
+                let config_content = fs::read_to_string(&config_path)
                     .map_err(|e| format!("Failed to read nuko.toml: {}", e))?;
-                let config: crate::models::InstanceConfig = toml::from_str(&config_content)
+                let config: InstanceConfig = toml::from_str(&config_content)
                     .map_err(|e| format!("Failed to parse nuko.toml: {}", e))?;
 
                 let instance_path = entry.path();
                 let mut running = false;
-                for (_pid, process) in sys.processes() {
-                    if let Some(cwd) = process.cwd() {
-                        if cwd == instance_path {
-                            running = true;
-                            break;
-                        }
+                for process in sys.processes().values() {
+                    if is_instance_server_process(process, &instance_path) {
+                        running = true;
+                        break;
                     }
                 }
 
@@ -135,6 +255,7 @@ pub async fn list_instances(app_handle: tauri::AppHandle) -> Result<Vec<Instance
                     software: config.software,
                     version: config.version,
                     running,
+                    playit: config.playit,
                 });
             }
         }
@@ -156,12 +277,10 @@ pub async fn get_instance_info(
     sys.refresh_all();
 
     let mut running = false;
-    for (_pid, process) in sys.processes() {
-        if let Some(cwd) = process.cwd() {
-            if cwd == instance_dir {
-                running = true;
-                break;
-            }
+    for process in sys.processes().values() {
+        if is_instance_server_process(process, &instance_dir) {
+            running = true;
+            break;
         }
     }
 
@@ -171,6 +290,7 @@ pub async fn get_instance_info(
         software: config.software,
         version: config.version,
         running,
+        playit: config.playit,
     })
 }
 
@@ -189,7 +309,7 @@ pub async fn get_instance_metrics(
         true,
         sysinfo::ProcessRefreshKind::everything(),
     );
-    std::thread::sleep(std::time::Duration::from_millis(200));
+    thread::sleep(std::time::Duration::from_millis(200));
     sys.refresh_processes_specifics(
         sysinfo::ProcessesToUpdate::All,
         true,
@@ -199,12 +319,10 @@ pub async fn get_instance_metrics(
     let mut cpu_usage = 0.0;
     let mut memory_usage = 0;
 
-    for (_pid, process) in sys.processes() {
-        if let Some(cwd) = process.cwd() {
-            if cwd == instance_dir {
-                cpu_usage += process.cpu_usage();
-                memory_usage += process.memory();
-            }
+    for process in sys.processes().values() {
+        if is_instance_server_process(process, &instance_dir) {
+            cpu_usage += process.cpu_usage();
+            memory_usage += process.memory();
         }
     }
 
@@ -215,6 +333,23 @@ pub async fn get_instance_metrics(
         cpu_usage,
         memory_usage,
     })
+}
+
+#[tauri::command]
+pub async fn get_playit_tunnels(
+    app_handle: tauri::AppHandle,
+    id: String,
+) -> Result<Vec<PlayitTunnelMetadata>, String> {
+    let mut config = get_instance_by_id(&app_handle, &id).await;
+    if !config.playit {
+        return Ok(vec![]);
+    }
+
+    let data_dir = filesystem::get_data_dir(&app_handle)?;
+    let instance_dir = data_dir.join("instances").join(&config.name);
+    let secret = ensure_playit_secret(&mut config, &instance_dir).await?;
+
+    fetch_playit_tunnels(&secret).await
 }
 
 #[tauri::command]
@@ -250,12 +385,10 @@ pub async fn stop_instance(app_handle: tauri::AppHandle, id: String) -> Result<(
         sys.refresh_all();
 
         let mut found = false;
-        for (_pid, process) in sys.processes() {
-            if let Some(cwd) = process.cwd() {
-                if cwd == instance_dir {
-                    let _ = process.kill_with(sysinfo::Signal::Term);
-                    found = true;
-                }
+        for process in sys.processes().values() {
+            if is_instance_server_process(process, &instance_dir) {
+                let _ = process.kill_with(sysinfo::Signal::Term);
+                found = true;
             }
         }
 
@@ -264,6 +397,7 @@ pub async fn stop_instance(app_handle: tauri::AppHandle, id: String) -> Result<(
         }
     }
 
+    kill_playit_agent(&id);
     let _ = app_handle.emit("instances-updated", ());
     Ok(())
 }
@@ -283,12 +417,10 @@ pub async fn kill_instance(app_handle: tauri::AppHandle, id: String) -> Result<(
     sys.refresh_all();
 
     let mut found = false;
-    for (_pid, process) in sys.processes() {
-        if let Some(cwd) = process.cwd() {
-            if cwd == instance_dir {
-                let _ = process.kill_with(sysinfo::Signal::Kill);
-                found = true;
-            }
+    for process in sys.processes().values() {
+        if is_instance_server_process(process, &instance_dir) {
+            let _ = process.kill_with(sysinfo::Signal::Kill);
+            found = true;
         }
     }
 
@@ -296,6 +428,7 @@ pub async fn kill_instance(app_handle: tauri::AppHandle, id: String) -> Result<(
         return Err(format!("Instance '{}' is not running", instance.name));
     }
 
+    kill_playit_agent(&id);
     let _ = app_handle.emit("instances-updated", ());
     Ok(())
 }
@@ -312,18 +445,16 @@ pub async fn restart_instance(app_handle: tauri::AppHandle, id: String) -> Resul
     for _ in 0..60 {
         sys.refresh_all();
         let mut found = false;
-        for (_pid, process) in sys.processes() {
-            if let Some(cwd) = process.cwd() {
-                if cwd == instance_dir {
-                    found = true;
-                    break;
-                }
+        for process in sys.processes().values() {
+            if is_instance_server_process(process, &instance_dir) {
+                found = true;
+                break;
             }
         }
         if !found {
             break;
         }
-        std::thread::sleep(std::time::Duration::from_millis(500));
+        thread::sleep(std::time::Duration::from_millis(500));
     }
 
     start_instance(app_handle, id).await
@@ -357,14 +488,13 @@ pub async fn get_instance_by_id(app_handle: &tauri::AppHandle, id: &String) -> I
     let data_dir = filesystem::get_data_dir(app_handle).unwrap();
     let instances_dir = data_dir.join("instances");
 
-    for item in std::fs::read_dir(instances_dir).unwrap() {
+    for item in fs::read_dir(instances_dir).unwrap() {
         let entry = item.unwrap();
         if entry.file_type().unwrap().is_dir() {
             let config_path = entry.path().join("nuko.toml");
             if config_path.exists() {
-                let config_content = std::fs::read_to_string(&config_path).unwrap();
-                let config: crate::models::InstanceConfig =
-                    toml::from_str(&config_content).unwrap();
+                let config_content = fs::read_to_string(&config_path).unwrap();
+                let config: InstanceConfig = toml::from_str(&config_content).unwrap();
 
                 if config.id == *id {
                     return config;
@@ -378,7 +508,7 @@ pub async fn get_instance_by_id(app_handle: &tauri::AppHandle, id: &String) -> I
 
 #[tauri::command]
 pub async fn start_instance(app_handle: tauri::AppHandle, id: String) -> Result<(), String> {
-    let instance = get_instance_by_id(&app_handle, &id).await;
+    let mut instance = get_instance_by_id(&app_handle, &id).await;
 
     let data_dir = filesystem::get_data_dir(&app_handle)?;
     let instance_dir = data_dir.join("instances").join(&instance.name);
@@ -389,17 +519,16 @@ pub async fn start_instance(app_handle: tauri::AppHandle, id: String) -> Result<
 
     let mut sys = sysinfo::System::new_all();
     sys.refresh_all();
-    for (_pid, process) in sys.processes() {
-        if let Some(cwd) = process.cwd() {
-            if cwd == instance_dir {
-                return Err(format!("Instance '{}' is already running", instance.name));
-            }
+    for process in sys.processes().values() {
+        if is_instance_server_process(process, &instance_dir) {
+            return Err(format!("Instance '{}' is already running", instance.name));
         }
     }
 
     let java_path = instance
         .java
         .java_path
+        .clone()
         .unwrap_or_else(|| "java".to_string());
 
     let mut cmd = Command::new(java_path);
@@ -412,11 +541,82 @@ pub async fn start_instance(app_handle: tauri::AppHandle, id: String) -> Result<
         cmd.arg(format!("-Xmx{}", instance.java.max_memory));
     }
 
-    for arg in instance.java.additional_args {
+    for arg in &instance.java.additional_args {
         cmd.arg(arg);
     }
 
     cmd.arg("-jar").arg("server.jar").arg("nogui");
+
+    {
+        let mut logs_map = get_logs_map().lock().unwrap();
+        logs_map.insert(id.clone(), Vec::new());
+    }
+
+    if instance.playit {
+        let secret = ensure_playit_secret(&mut instance, &instance_dir).await?;
+
+        let playit_path = instance_dir.join(playit_binary_name());
+        if !playit_path.exists() {
+            download_playit(&instance_dir)
+                .await
+                .map_err(|e| format!("Error calling download_playit: {}", e))?;
+        }
+
+        let secret_path = persist_playit_secret(&instance_dir, &secret)?;
+
+        let mut playit_cmd = Command::new(&playit_path);
+        playit_cmd.current_dir(&instance_dir);
+        playit_cmd.arg("start");
+        playit_cmd.arg("--stdout");
+        playit_cmd.arg("--secret_path");
+        playit_cmd.arg(secret_path.to_string_lossy().to_string());
+        playit_cmd.stdout(Stdio::piped());
+        playit_cmd.stderr(Stdio::piped());
+
+        if let Ok(mut child) = playit_cmd.spawn() {
+            if let Some(stdout) = child.stdout.take() {
+                let app_clone = app_handle.clone();
+                let id_clone = id.clone();
+                thread::spawn(move || {
+                    let reader = BufReader::new(stdout);
+                    for line in reader.lines() {
+                        if let Ok(line) = line {
+                            let log_line = format!("[playit] {}", line);
+                            {
+                                let mut logs_map = get_logs_map().lock().unwrap();
+                                if let Some(logs) = logs_map.get_mut(&id_clone) {
+                                    logs.push(log_line.clone());
+                                }
+                            }
+                            let _ = app_clone.emit(&format!("instance-log-{}", id_clone), log_line);
+                        }
+                    }
+                });
+            }
+            if let Some(stderr) = child.stderr.take() {
+                let app_clone = app_handle.clone();
+                let id_clone = id.clone();
+                thread::spawn(move || {
+                    let reader = BufReader::new(stderr);
+                    for line in reader.lines() {
+                        if let Ok(line) = line {
+                            let log_line = format!("[playit] {}", line);
+                            {
+                                let mut logs_map = get_logs_map().lock().unwrap();
+                                if let Some(logs) = logs_map.get_mut(&id_clone) {
+                                    logs.push(log_line.clone());
+                                }
+                            }
+                            let _ = app_clone.emit(&format!("instance-log-{}", id_clone), log_line);
+                        }
+                    }
+                });
+            }
+
+            let mut processes = get_playit_processes().lock().unwrap();
+            processes.insert(id.clone(), child);
+        }
+    }
 
     let mut child = cmd
         .stdin(Stdio::piped())
@@ -428,11 +628,6 @@ pub async fn start_instance(app_handle: tauri::AppHandle, id: String) -> Result<
     if let Some(stdin) = child.stdin.take() {
         let mut stdin_map = get_stdin_map().lock().unwrap();
         stdin_map.insert(id.clone(), stdin);
-    }
-
-    {
-        let mut logs_map = get_logs_map().lock().unwrap();
-        logs_map.insert(id.clone(), Vec::new());
     }
 
     let stdout = child.stdout.take().ok_or("Failed to capture stdout")?;
@@ -480,6 +675,7 @@ pub async fn start_instance(app_handle: tauri::AppHandle, id: String) -> Result<
             let mut stdin_map = get_stdin_map().lock().unwrap();
             stdin_map.remove(&id_clone_wait);
         }
+        kill_playit_agent(&id_clone_wait);
         let _ = app_clone_wait.emit("instances-updated", ());
     });
 

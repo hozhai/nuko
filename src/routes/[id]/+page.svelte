@@ -5,9 +5,20 @@
     import { invoke } from "@tauri-apps/api/core";
     import { Button } from "$lib/components/ui/button";
     import { Input } from "$lib/components/ui/input";
+    import { Spinner } from "$lib/components/ui/spinner";
     import { ChartContainer, ChartTooltip } from "$lib/components/ui/chart";
     import { AreaChart } from "layerchart";
     import { scaleTime } from "d3-scale";
+
+    type PlayitTunnel = {
+        id?: string;
+        name?: string;
+        protocol?: string;
+        public_hostname?: string;
+        public_port?: number;
+        destination_port?: number;
+        status?: string;
+    };
 
     let uuid = page.params.id;
 
@@ -20,12 +31,42 @@
     let historyIndex = $state(-1);
     let historyDraft = $state("");
 
+    let hasPlayit = $state(false);
+    let playitTunnels = $state<PlayitTunnel[]>([]);
+    let playitLoading = $state(false);
+    let playitError = $state<string | null>(null);
+
     function fetchInstanceInfo() {
-        invoke<{ running: boolean }>("get_instance_info", { id: uuid })
+        invoke<{ running: boolean; playit: boolean }>("get_instance_info", {
+            id: uuid,
+        })
             .then((info) => {
                 isRunning = info.running;
+                hasPlayit = info.playit;
             })
             .catch(console.error);
+    }
+
+    async function fetchPlayitTunnels() {
+        if (!hasPlayit) {
+            playitTunnels = [];
+            playitError = null;
+            return;
+        }
+
+        playitLoading = true;
+        playitError = null;
+
+        try {
+            const tunnels = await invoke<PlayitTunnel[]>("get_playit_tunnels", {
+                id: uuid,
+            });
+            playitTunnels = tunnels;
+        } catch (error) {
+            playitError = String(error);
+        } finally {
+            playitLoading = false;
+        }
     }
 
     $effect(() => {
@@ -34,6 +75,7 @@
         let unlistenInfo: UnlistenFn;
         listen("instances-updated", () => {
             fetchInstanceInfo();
+            fetchPlayitTunnels();
         }).then((fn) => {
             unlistenInfo = fn;
         });
@@ -68,6 +110,18 @@
     });
 
     $effect(() => {
+        if (!hasPlayit) {
+            playitTunnels = [];
+            playitError = null;
+            return;
+        }
+
+        fetchPlayitTunnels();
+        const intervalRefresh = setInterval(() => fetchPlayitTunnels(), 15_000);
+        return () => clearInterval(intervalRefresh);
+    });
+
+    $effect(() => {
         let interval: ReturnType<typeof setInterval>;
         if (isRunning) {
             interval = setInterval(() => {
@@ -77,7 +131,7 @@
                     memory_usage: number;
                 }>("get_instance_metrics", { id: uuid })
                     .then((m) => {
-                        const cutoff = Date.now() - 30000;
+                        const cutoff = Date.now() - 30_000;
                         const newMetrics = [
                             ...metrics,
                             {
@@ -169,7 +223,6 @@
         </div>
     </div>
 
-    <!-- Terminal Window -->
     <div
         class="flex-1 bg-muted/50 rounded-lg border p-4 overflow-hidden flex flex-col shadow-inner min-h-[500px] max-h-[500px] overflow-y-scroll"
     >
@@ -252,7 +305,6 @@
         </Button>
     </div>
 
-    <!-- Metrics -->
     <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
         <div class="bg-card border rounded-lg p-4 flex flex-col gap-2">
             <h2 class="font-semibold">CPU Usage (%)</h2>
@@ -308,4 +360,69 @@
             </div>
         </div>
     </div>
+
+    {#if hasPlayit}
+        <section class="bg-card border rounded-lg p-4 flex flex-col gap-3">
+            <div class="flex items-center justify-between gap-3">
+                <div>
+                    <h2 class="font-semibold">Playit.gg Tunnels</h2>
+                    <p class="text-sm text-muted-foreground">
+                        Current public endpoints exposed via playit.gg.
+                    </p>
+                </div>
+                <Button
+                    variant="secondary"
+                    class="cursor-pointer"
+                    disabled={playitLoading}
+                    onclick={fetchPlayitTunnels}
+                >
+                    {#if playitLoading}
+                        <Spinner class="h-4 w-4" />
+                    {:else}
+                        Refresh
+                    {/if}
+                </Button>
+            </div>
+
+            {#if playitError}
+                <p class="text-sm text-destructive">{playitError}</p>
+            {/if}
+
+            {#if !playitError && playitTunnels.length === 0 && !playitLoading}
+                <p class="text-sm text-muted-foreground">
+                    No tunnels reported yet. Confirm your playit.gg dashboard.
+                </p>
+            {/if}
+
+            <div class="grid gap-3 md:grid-cols-2">
+                {#each playitTunnels as tunnel}
+                    <div
+                        class="border rounded-md p-3 bg-muted/40 flex flex-col gap-1"
+                    >
+                        <div class="flex items-center justify-between gap-2">
+                            <span class="font-semibold text-sm">
+                                {tunnel.name ?? "Unnamed Tunnel"}
+                            </span>
+                            <span class="text-xs text-muted-foreground">
+                                {tunnel.protocol ?? "Unknown"}
+                            </span>
+                        </div>
+                        {#if tunnel.public_hostname}
+                            <p class="font-mono text-sm break-all">
+                                {tunnel.public_hostname}{#if tunnel.public_port}:{tunnel.public_port}{/if}
+                            </p>
+                        {/if}
+                        <p
+                            class="text-xs text-muted-foreground flex gap-1 flex-wrap"
+                        >
+                            <span>{tunnel.status ?? "Active"}</span>
+                            {#if tunnel.destination_port}
+                                <span>• Target {tunnel.destination_port}</span>
+                            {/if}
+                        </p>
+                    </div>
+                {/each}
+            </div>
+        </section>
+    {/if}
 </main>

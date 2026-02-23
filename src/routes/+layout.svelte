@@ -1,4 +1,4 @@
-<script>
+<script lang="ts">
     import "../app.css";
     import { onMount } from "svelte";
     import { invoke } from "@tauri-apps/api/core";
@@ -9,7 +9,7 @@
 
         async function setup() {
             try {
-                const config = await invoke("get_config");
+                const config = await invoke<{ theme: string }>("get_config");
                 localStorage.setItem("theme", config.theme);
                 if (config.theme === "dark") {
                     document.documentElement.classList.add("dark");
@@ -21,7 +21,7 @@
             }
 
             unlisten = await listen("theme-changed", (event) => {
-                const theme = event.payload;
+                const theme = event.payload as string;
                 localStorage.setItem("theme", theme);
                 if (theme === "dark") {
                     document.documentElement.classList.add("dark");

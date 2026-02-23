@@ -14,6 +14,14 @@ const config = {
       strict: true,
     }),
   },
+
+  vitePlugin: {
+    experimental: {
+      compileModule: {
+        include: ["**/*.svelte.js"],
+      },
+    },
+  },
 };
 
 export default config;

@@ -2212,6 +2212,7 @@ dependencies = [
  "tauri-plugin-dialog",
  "tauri-plugin-fs",
  "tauri-plugin-opener",
+ "tokio",
  "toml 1.0.3+spec-1.1.0",
  "uuid",
 ]

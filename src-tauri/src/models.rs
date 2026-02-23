@@ -42,6 +42,7 @@ pub struct Instance {
     pub name: String,
     pub software: String,
     pub version: String,
+    pub playit: bool,
     pub loader: Option<String>,
     pub custom_jar_path: Option<String>,
 }
@@ -53,8 +54,14 @@ pub struct InstanceConfig {
     pub software: String,
     pub version: String,
     pub loader: Option<String>,
+    #[serde(default)]
+    pub playit: bool,
+    #[serde(default)]
+    pub playit_secret: Option<String>,
     pub custom_jar_path: Option<String>,
+    #[serde(default)]
     pub java: JavaConfig,
+    #[serde(default)]
     pub metadata: MetadataConfig,
 }
 
@@ -65,6 +72,7 @@ pub struct InstanceInfo {
     pub software: String,
     pub version: String,
     pub running: bool,
+    pub playit: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -74,19 +82,42 @@ pub struct InstanceMetrics {
     pub memory_usage: u64,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Default)]
 pub struct JavaConfig {
     pub min_memory: String,
     pub max_memory: String,
     pub java_path: Option<String>,
+    #[serde(default)]
     pub additional_args: Vec<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Default)]
 pub struct MetadataConfig {
     pub created_at: String,
     pub last_played: Option<String>,
+    #[serde(default)]
     pub play_time_minutes: u64,
+    #[serde(default)]
+    pub playit: PlayitMetadata,
+}
+
+#[derive(Debug, Serialize, Deserialize, Default)]
+pub struct PlayitMetadata {
+    #[serde(default)]
+    pub tunnels: Vec<PlayitTunnelMetadata>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Default, Clone)]
+pub struct PlayitTunnelMetadata {
+    pub id: Option<String>,
+    pub name: Option<String>,
+    pub protocol: Option<String>,
+    pub public_hostname: Option<String>,
+    pub public_port: Option<u16>,
+    pub destination_port: Option<u16>,
+    pub agent_version: Option<String>,
+    pub status: Option<String>,
+    pub last_heartbeat: Option<String>,
 }
 
 // ============ Download (Vanilla) ============
